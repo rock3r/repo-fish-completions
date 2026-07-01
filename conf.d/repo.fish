@@ -39,3 +39,15 @@ function __fish_repo_invalidate_cache --on-event fish_postexec
         set -e __repo_project_cache
     end
 end
+
+# Manual escape hatch: clear the completion caches on demand. Useful when the
+# auto-invalidation above can't see a change — e.g. branches mutated through
+# `repo forall -c 'git ...'`, from another shell/terminal, or after a hand-edit.
+function repo-clear-completions-cache --description 'Clear the repo completion caches (project & branch lists)'
+    set -e __repo_project_cache
+    set -e __repo_branch_cache
+    echo "repo completion caches cleared."
+end
+
+abbr -a rcc repo-clear-completions-cache
+abbr -a repo-cache-clear repo-clear-completions-cache

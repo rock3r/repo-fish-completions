@@ -41,7 +41,7 @@ Fish loads the completion + conf.d files on the next prompt — no restart neede
 ## Performance notes
 
 * Project and branch lists are **cached for the session** (`$__repo_project_cache` / `$__repo_branch_cache`) so `repo list` and `repo forall` are only run once.
-* The caches are **invalidated automatically** after mutating commands via a `fish_postexec` handler (see `conf.d/repo.fish`). To refresh by hand: `set -e __repo_project_cache __repo_branch_cache`.
+* The caches are **invalidated automatically** after mutating commands via a `fish_postexec` handler (see `conf.d/repo.fish`). To refresh by hand, run `repo-clear-completions-cache` (alias `rcc`) — handy when a change happened outside the handler's view, e.g. via `repo forall -c 'git ...'` or from another terminal.
 * All dynamic helpers silently return nothing when run outside a repo client checkout (or before `repo init`), so completions degrade gracefully.
 
 ## repo-stale-branches
