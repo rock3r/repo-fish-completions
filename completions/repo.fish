@@ -67,8 +67,10 @@ function __fish_repo_branches --description 'List local branches across all repo
     or return
 
     set -l branches (
+        # NB: the %(refname:short) format MUST be quoted — repo forall hands the
+        # -c argument to `sh -c`, and bare parentheses are parsed as subshells.
         repo forall --ignore-missing -c \
-            'git for-each-ref --format=%(refname:short) refs/heads/' 2>/dev/null |
+            'git for-each-ref --format="%(refname:short)" refs/heads/' 2>/dev/null |
         string trim | sort -u
     )
     test -n "$branches"
