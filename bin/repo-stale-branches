@@ -1,0 +1,167 @@
+#!/bin/sh
+# repo-stale-branches
+#
+# Find local `repo` topic branches that are already merged upstream, detected by
+# Gerrit Change-Id. This is the reliable way to spot stale branches in a Gerrit
+# workflow: `repo prune` compares commit SHAs, but Gerrit rewrites SHAs on
+# submission, so it can never see a submitted branch as merged.
+#
+# A branch is reported as STALE when every commit it adds on top of upstream
+# carries a Change-Id that is also present in the project's upstream history.
+#
+# Default mode is a dry run (lists only). Pass --abandon to delete them.
+
+set -u
+
+usage() {
+    cat <<EOF
+Usage: repo-stale-branches [--abandon] [--since=DATE] [--manifest-branch=B] [-h]
+
+Scan every project in the current repo client for local topic branches whose
+commits are all already present upstream, matched by Gerrit Change-Id.
+
+Options:
+  --abandon            Abandon (force-delete) the detected stale branches
+                       via 'repo abandon'. Without this, only lists them.
+  --since=DATE         Only scan upstream commits newer than DATE for Change-Ids
+                       (default: "1 year ago"). Raise this if old merges go
+                       undetected; it mainly bounds how much history we read.
+  --manifest-branch=B  Upstream branch to compare against (default: read from
+                       the manifest checkout, e.g. studio-main).
+  -h, --help           Show this help.
+
+Exit codes: 0 ok (stale branches listed/abandoned or none found); 2 not in a
+repo client; 3 usage error.
+EOF
+}
+
+abandon=0
+since="1 year ago"
+mbranch=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --abandon) abandon=1 ;;
+        --since=*) since="${1#--since=}" ;;
+        --manifest-branch=*) mbranch="${1#--manifest-branch=}" ;;
+        -h|--help) usage; exit 0 ;;
+        --*) printf 'unknown option: %s\n' "$1" >&2; usage >&2; exit 3 ;;
+        *) printf 'unexpected argument: %s\n' "$1" >&2; usage >&2; exit 3 ;;
+    esac
+    shift
+done
+
+# Locate the repo client root by walking up for a .repo directory.
+top="$PWD"
+while :; do
+    [ -d "$top/.repo" ] && break
+    parent=$(dirname "$top")
+    if [ "$parent" = "$top" ]; then
+        echo "error: not inside a repo client checkout (no .repo found)" >&2
+        exit 2
+    fi
+    top="$parent"
+done
+
+if [ -z "$mbranch" ]; then
+    mbranch=$(git -C "$top/.repo/manifests" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+fi
+if [ -z "$mbranch" ]; then
+    echo "error: could not determine manifest branch (use --manifest-branch=)" >&2
+    exit 2
+fi
+
+# Gather "relpath branch" for every local branch across all projects in one
+# repo invocation. NB: the %(refname:short) format is quoted because repo
+# forall hands the -c argument to `sh -c`, where bare parens are subshells.
+pairs=$(repo forall --ignore-missing -c \
+    'for b in $(git for-each-ref --format="%(refname:short)" refs/heads/); do
+        [ "$b" = "$REPO__WORKING_BRANCH" ] && continue
+        printf "%s %s\n" "$REPO_PATH" "$b"
+     done' 2>/dev/null || true)
+if [ -z "$pairs" ]; then
+    echo "No local topic branches found in any project."
+    exit 0
+fi
+
+relpaths=$(printf '%s\n' "$pairs" | awk '{print $1}' | sort -u)
+
+stale_file=$(mktemp)
+trap 'rm -f "$stale_file"' EXIT
+: > "$stale_file"
+
+cid_re='Change-Id: I[0-9a-fA-F]{40}'
+
+for rel in $relpaths; do
+    wt="$top/$rel"
+    [ -d "$wt" ] || continue
+
+    # Upstream ref to compare against: prefer m/<manifest-branch>, else newest m/*.
+    up="refs/remotes/m/$mbranch"
+    if ! git -C "$wt" rev-parse --verify -q "$up^{commit}" >/dev/null 2>&1; then
+        up=$(git -C "$wt" for-each-ref --format='%(refname)' \
+            --sort=-committerdate refs/remotes/m/ 2>/dev/null | head -1)
+    fi
+    [ -n "$up" ] || continue
+
+    # Build the set of Change-Ids present in upstream history (bounded by --since).
+    cids_file=$(mktemp)
+    # shellcheck disable=SC2016
+    git -C "$wt" log --since="$since" --format='%B' "$up" 2>/dev/null \
+        | grep -oE "$cid_re" | sort -u > "$cids_file" 2>/dev/null || true
+
+    # Current branch in this project (skip — you can't abandon where you stand).
+    cur=$(git -C "$wt" symbolic-ref --short HEAD 2>/dev/null || true)
+
+    for b in $(printf '%s\n' "$pairs" | awk -v p="$rel" '$1==p{print $2}'); do
+        [ "$b" = "$cur" ] && continue
+
+        # Commits the branch adds on top of upstream (by SHA — these are the ones
+        # whose Change-Id we need to confirm landed).
+        commits=$(git -C "$wt" log --format='%H' "$up..$b" 2>/dev/null || true)
+
+        isstale=1
+        if [ -n "$commits" ]; then
+            for h in $commits; do
+                cid=$(git -C "$wt" log -1 --format='%B' "$h" 2>/dev/null \
+                    | grep -oE "$cid_re" | head -1)
+                # A commit with no Change-Id can't be verified -> not confirmable.
+                if [ -z "$cid" ]; then isstale=0; break; fi
+                # Change-Id not found upstream -> still pending -> not stale.
+                grep -qxF "$cid" "$cids_file" 2>/dev/null || { isstale=0; break; }
+            done
+        fi
+        # (empty $commits means the branch is already an ancestor of upstream by
+        #  SHA — trivially merged, so it counts as stale.)
+
+        if [ "$isstale" = 1 ]; then
+            printf '%s\t%s\n' "$rel" "$b" >> "$stale_file"
+        fi
+    done
+
+    rm -f "$cids_file"
+done
+
+if [ ! -s "$stale_file" ]; then
+    echo "No stale branches found (all local topic branches still have unmerged work)."
+    exit 0
+fi
+
+echo "Stale branches (Change-Id matched upstream):"
+echo
+while IFS=$(printf '\t') read -r rel b; do
+    [ -n "$rel" ] || continue
+    printf '  %-40s  %s\n' "$b" "$rel"
+done < "$stale_file"
+echo
+
+if [ "$abandon" = 1 ]; then
+    echo "Abandoning:"
+    while IFS=$(printf '\t') read -r rel b; do
+        [ -n "$rel" ] || continue
+        printf '  repo abandon %s %s\n' "$b" "$rel"
+        (cd "$top" && repo abandon "$b" "$rel") || \
+            printf '    (failed: %s in %s)\n' "$b" "$rel" >&2
+    done < "$stale_file"
+else
+    echo "Dry run — re-run with --abandon to delete these."
+fi

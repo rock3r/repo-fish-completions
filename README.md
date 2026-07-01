@@ -17,19 +17,46 @@ Positional context is respected: e.g. `repo checkout` offers **branches** for th
 
 ## Installation
 
-Copy `completions/repo.fish` into your fish completions directory:
+Three pieces, all optional and independent:
 
 ```sh
+# 1. Completions (the main feature).
 mkdir -p ~/.config/fish/completions
 cp completions/repo.fish ~/.config/fish/completions/
+
+# 2. Cache invalidation — clears the cached project/branch lists automatically
+#    after `repo start` / `abandon` / `sync` / `init` / `wipe` / `checkout` /
+#    `download`, so Tab always reflects the current state. Lives in conf.d/
+#    (sourced at startup) rather than completions/ because completion files load
+#    lazily — too late to register an event handler.
+mkdir -p ~/.config/fish/conf.d
+cp conf.d/repo.fish ~/.config/fish/conf.d/
+
+# 3. repo-stale-branches helper (see below). Put it anywhere on $PATH.
+cp bin/repo-stale-branches ~/bin/
 ```
 
-Fish loads it automatically on the next prompt — no restart needed.
+Fish loads the completion + conf.d files on the next prompt — no restart needed.
 
 ## Performance notes
 
-* Project and branch lists are **cached for the session** (`$__repo_project_cache` / `$__repo_branch_cache`) so `repo list` and `repo forall` are only run once. To refresh, start a new shell or `set -e __repo_project_cache __repo_branch_cache`.
+* Project and branch lists are **cached for the session** (`$__repo_project_cache` / `$__repo_branch_cache`) so `repo list` and `repo forall` are only run once.
+* The caches are **invalidated automatically** after mutating commands via a `fish_postexec` handler (see `conf.d/repo.fish`). To refresh by hand: `set -e __repo_project_cache __repo_branch_cache`.
 * All dynamic helpers silently return nothing when run outside a repo client checkout (or before `repo init`), so completions degrade gracefully.
+
+## repo-stale-branches
+
+A companion script that finds local topic branches already merged upstream, detected by **Gerrit Change-Id**.
+
+`repo prune` can't do this: it compares commit SHAs, but Gerrit rewrites SHAs on submission, so a submitted branch never looks merged to `git branch -d`. Matching by Change-Id (which Gerrit preserves) is the only reliable signal.
+
+```sh
+repo-stale-branches                 # list stale branches (dry run)
+repo-stale-branches --abandon       # force-delete them via `repo abandon`
+repo-stale-branches --since='2 years ago'   # widen the upstream history scan
+```
+
+A branch is reported stale when every commit it adds on top of upstream carries a Change-Id that also appears in the project's upstream history. Branches whose changes are still under review (or that have commits without a Change-Id) are left alone, and the branch you're currently on is never touched.
 
 ## Compatibility
 
