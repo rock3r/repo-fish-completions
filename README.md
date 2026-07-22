@@ -32,8 +32,9 @@ cp completions/repo.fish ~/.config/fish/completions/
 mkdir -p ~/.config/fish/conf.d
 cp conf.d/repo.fish ~/.config/fish/conf.d/
 
-# 3. repo-stale-branches helper (see below). Put it anywhere on $PATH.
+# 3. repo-stale-branches helper and its Fish completions (see below).
 cp bin/repo-stale-branches ~/bin/
+cp completions/repo-stale-branches.fish ~/.config/fish/completions/
 ```
 
 Fish loads the completion + conf.d files on the next prompt — no restart needed.
@@ -52,11 +53,14 @@ A companion script that finds local topic branches already merged upstream, dete
 
 ```sh
 repo-stale-branches                 # list stale branches (dry run)
-repo-stale-branches --abandon       # force-delete them via `repo abandon`
+repo-stale-branches --abandon       # delete inactive stale branches
+repo-stale-branches --checkout-upstream-and-abandon
+                                    # cleanly detach active stale branches,
+                                    # then delete all stale branches
 repo-stale-branches --since='2 years ago'   # widen the upstream history scan
 ```
 
-A branch is reported stale when every commit it adds on top of upstream carries a Change-Id that also appears in the project's upstream history. Branches whose changes are still under review (or that have commits without a Change-Id) are left alone, and the branch you're currently on is never touched.
+A branch is reported stale when every commit it adds on top of upstream carries a Change-Id that also appears in the project's upstream history. Branches whose changes are still under review (or that have commits without a Change-Id) are left alone. An active stale branch is listed as not abandonable: `--abandon` skips it. Use the explicit `--checkout-upstream-and-abandon` mode only when its worktree is clean; it detaches the worktree at the manifest upstream before deleting the branch.
 
 ## Compatibility
 
